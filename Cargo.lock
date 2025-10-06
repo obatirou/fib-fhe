@@ -427,6 +427,7 @@ dependencies = [
 name = "tfhe"
 version = "0.1.0"
 dependencies = [
+ "rayon",
  "tfhe 1.3.3",
 ]
 
