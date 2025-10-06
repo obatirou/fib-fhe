@@ -3,11 +3,14 @@ use tfhe::prelude::*;
 use std::io::{self, Write};
 use rayon::prelude::*;
 
-// 24 is the maximum index for the Fibonacci sequence that can be computed with a 16-bit integer
-const MAX_FIBONACCI_INDEX: u16 = 10;
+/// Maximum supported index for 16-bit Fibonacci; `F(25) = 75025` > `u16::MAX`.
+const MAX_FIBONACCI_INDEX: u16 = 24;
 
+/// Read a `u16` in the range `0..=24` from stdin.
+///
+/// Returns a `ParseIntError` if parsing fails; the caller is expected to retry.
 fn get_number_input() -> Result<u16, std::num::ParseIntError> {
-    print!("Enter a number (0-10): ");
+    print!("Enter a number (0-24): ");
     io::stdout().flush().unwrap();
 
     let mut input = String::new();
@@ -15,39 +18,43 @@ fn get_number_input() -> Result<u16, std::num::ParseIntError> {
     input.trim().parse::<u16>()
 }
 
+/// Homomorphically compute `Fibonacci(n)`.
+///
+/// - `n`: encrypted index
+/// - `pks`: public key derived from the same client key used to encrypt `n`;
+///   used to encrypt constant indices.
+///
+/// Precondition: the server key must have been registered via `set_server_key`.
+/// Returns an encrypted `F(n)`.
 fn fibonacci(n: FheUint16, pks: PublicKey) -> FheUint16 {
-    // Precompute encrypted indices in parallel
-    println!("Precomputing encrypted indices...");
-    let encrypted_indices = (0..=MAX_FIBONACCI_INDEX)
+    // Encrypt constants 0..=MAX in parallel to enable encrypted equality tests.
+    let encrypted_indices : Vec<FheUint16> = (0..=MAX_FIBONACCI_INDEX)
         .into_par_iter()
         .map(|i| FheUint16::encrypt(i, &pks))
-        .collect::<Vec<FheUint16>>();
+        .collect();
 
-    println!("n_is_0");
+    // Initialize result with F(0) or F(1) depending on whether n == 0.
     let n_is_0 = n.eq(&encrypted_indices[0]);
-    println!("selecting result");
-    let mut result = n_is_0.select(&encrypted_indices[0], &encrypted_indices[1]);
-
     let mut a = encrypted_indices[0].clone();
     let mut b = encrypted_indices[1].clone();
+    let mut result = n_is_0.select(&a, &b);
 
     for i in 2..=MAX_FIBONACCI_INDEX {
-        println!("Calculating next Fibonacci number...");
         let next_fib = a + b.clone();
         a = b;
         b = next_fib.clone();
-        println!("Encrypting index...");
         let i_usize = i.clone() as usize;
         let i_encrypted = encrypted_indices[i_usize].clone();
-        println!("Checking if input is equal to index...");
         let n_is_i = n.eq(&i_encrypted);
-        println!("Selecting result...");
+        // Use encrypted equality + select to multiplex the running result
+        // without data-dependent control flow.
         result = n_is_i.select(&next_fib,&result);
     }
 
     return result;
 }
 
+/// Plaintext reference implementation used for verification.
 fn fibonacci_plaintext(n: u16) -> u16 {
     let mut a = 0;
     let mut b = 1;
@@ -70,18 +77,14 @@ fn main() {
     let clear_a = loop {
         match get_number_input() {
             Ok(num) => break num,
-            Err(_) => println!("Invalid input. Please enter a number between 0 and 10."),
+            Err(_) => println!("Invalid input. Please enter a number between 0 and 24."),
         }
     };
-
     println!("You entered: {}", clear_a);
-
-    println!("Encrypting value...");
     let a = FheUint16::encrypt(clear_a, &client_key);
 
     // Server-side
     set_server_key(server_key);
-
     println!("Computing Fibonacci number...");
     let result = fibonacci(a, pks);
 
