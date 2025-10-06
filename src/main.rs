@@ -9,13 +9,16 @@ const MAX_FIBONACCI_INDEX: u16 = 24;
 /// Read a `u16` in the range `0..=24` from stdin.
 ///
 /// Returns a `ParseIntError` if parsing fails; the caller is expected to retry.
-fn get_number_input() -> Result<u16, std::num::ParseIntError> {
-    print!("Enter a number (0-24): ");
-    io::stdout().flush().unwrap();
+fn get_number_input() -> io::Result<u16> {
+    print!("Enter a number (0-{}): ", MAX_FIBONACCI_INDEX);
+    io::stdout().flush()?;
 
     let mut input = String::new();
-    io::stdin().read_line(&mut input).expect("Failed to read line");
-    input.trim().parse::<u16>()
+    io::stdin().read_line(&mut input)?;
+    input
+        .trim()
+        .parse::<u16>()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))
 }
 
 /// Homomorphically compute `Fibonacci(n)`.
@@ -26,11 +29,11 @@ fn get_number_input() -> Result<u16, std::num::ParseIntError> {
 ///
 /// Precondition: the server key must have been registered via `set_server_key`.
 /// Returns an encrypted `F(n)`.
-fn fibonacci(n: FheUint16, pks: PublicKey) -> FheUint16 {
+fn fibonacci(n: &FheUint16, pks: &PublicKey) -> FheUint16 {
     // Encrypt constants 0..=MAX in parallel to enable encrypted equality tests.
     let encrypted_indices : Vec<FheUint16> = (0..=MAX_FIBONACCI_INDEX)
         .into_par_iter()
-        .map(|i| FheUint16::encrypt(i, &pks))
+        .map(|i| FheUint16::encrypt(i, pks))
         .collect();
 
     // Initialize result with F(0) or F(1) depending on whether n == 0.
@@ -43,15 +46,14 @@ fn fibonacci(n: FheUint16, pks: PublicKey) -> FheUint16 {
         let next_fib = a + b.clone();
         a = b;
         b = next_fib.clone();
-        let i_usize = i.clone() as usize;
-        let i_encrypted = encrypted_indices[i_usize].clone();
+        let i_encrypted = encrypted_indices[usize::from(i)].clone();
         let n_is_i = n.eq(&i_encrypted);
         // Use encrypted equality + select to multiplex the running result
         // without data-dependent control flow.
         result = n_is_i.select(&next_fib,&result);
     }
 
-    return result;
+    result
 }
 
 /// Plaintext reference implementation used for verification.
@@ -63,7 +65,7 @@ fn fibonacci_plaintext(n: u16) -> u16 {
         a = b;
         b = tmp;
     }
-    return a;
+    a
 }
 
 fn main() {
@@ -86,7 +88,7 @@ fn main() {
     // Server-side
     set_server_key(server_key);
     println!("Computing Fibonacci number...");
-    let result = fibonacci(a, pks);
+    let result = fibonacci(&a, &pks);
 
     // Client-side
     let decrypted_result: u16 = result.decrypt(&client_key);
@@ -110,7 +112,7 @@ mod tests {
         // Test for a range of small n
         for n in 0u16..=10 {
             let encrypted = FheUint16::encrypt(n, &client_key);
-            let encrypted_result = fibonacci(encrypted, pks.clone());
+            let encrypted_result = fibonacci(&encrypted, &pks);
             let decrypted_result: u16 = encrypted_result.decrypt(&client_key);
 
             let expected = fibonacci_plaintext(n);
